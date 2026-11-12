@@ -216,6 +216,15 @@ class LimitOfTest(unittest.TestCase):
         limit = lw.limit_of(limit_row(quotaLimits=info(**extra)))
         self.assertEqual([cap.kind for cap in limit.caps], ['five_hour', 'spend_weekly'])
 
+    def test_unreadable_structured_info_falls_back_to_the_text(self):
+        bad = info(
+            overageDisabledReason='org_spend_cap_reached',
+            overageResetsAt=1794400000,
+            overagePeriodMonthly={'utilization': '1'},
+        )
+        self.assertEqual(lw.limit_of(limit_row(quotaLimits=bad)).window, 'five_hour')
+        self.assertEqual(lw.limit_of(limit_row(quotaLimits=['not', 'a', 'dict'])).window, 'five_hour')
+
     def test_other_errors_and_rows_are_not_limits(self):
         self.assertIsNone(lw.limit_of(limit_row('API Error: overloaded')))
         self.assertIsNone(lw.limit_of({'type': 'user', 'timestamp': stamp(AT)}))
@@ -245,6 +254,14 @@ class FindLimitTest(unittest.TestCase):
     def test_ignores_errors_that_are_not_limits(self):
         self.write({'type': 'user'}, limit_row('API Error: overloaded'))
         self.assertIsNone(lw.find_limit(self.path, datetime.now(UTC)))
+
+    def test_a_newer_error_that_is_no_limit_makes_the_limit_before_it_stale(self):
+        self.write(limit_row(), limit_row('API Error: overloaded'))
+        self.assertIsNone(lw.find_limit(self.path, datetime.now(UTC)))
+
+    def test_a_subagents_error_after_the_limit_does_not_hide_it(self):
+        self.write(limit_row(), limit_row('API Error: overloaded', isSidechain=True))
+        self.assertEqual(lw.find_limit(self.path, datetime.now(UTC)).window, 'five_hour')
 
     def test_a_missing_transcript_is_none(self):
         self.assertIsNone(lw.find_limit(self.path, datetime.now(UTC)))
@@ -434,6 +451,11 @@ class PushTest(unittest.TestCase):
         self.assertFalse(self.push())
         self.assertEqual(len(self.server.requests), 3)
         self.assertEqual(self.lines[-1], 'gave up pushing')
+
+    def test_it_waits_between_attempts_but_not_after_the_last(self):
+        self.server.status = 503
+        self.push()
+        self.assertEqual(self.sleep.call_args_list, [mock.call(lw.PUSH_RETRY_WAIT)] * (lw.PUSH_ATTEMPTS - 1))
 
     def test_too_many_requests_is_retried(self):
         self.server.status = 429

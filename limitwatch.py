@@ -24,6 +24,8 @@ RECENT = timedelta(minutes=5)  # a limit error older than this is not the one th
 WINDOW_WAIT = timedelta(days=8)
 DAY, WEEK = timedelta(days=1), timedelta(days=7)
 CREDIT_WAIT = timedelta(days=35)  # a spend cap may reset weekly or monthly
+PUSH_ATTEMPTS = 3
+PUSH_RETRY_WAIT = 30  # seconds between attempts
 
 # rateLimitType in the error's rate_limit_info, and the label Claude Code itself gives each limit.
 KINDS = {
@@ -198,8 +200,11 @@ def limit_of(row: dict) -> Limit | None:
     if not row.get('isApiErrorMessage'):
         return None
     at = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
-    info = {**((row.get('apiErrorParams') or {}).get('rate_limit_info') or {}), **(row.get('quotaLimits') or {})}
-    caps = caps_from_info(info, at)
+    try:
+        info = {**((row.get('apiErrorParams') or {}).get('rate_limit_info') or {}), **(row.get('quotaLimits') or {})}
+        caps = caps_from_info(info, at)
+    except (TypeError, ValueError, AttributeError):
+        caps = []  # unreadable structured info: the message text still says when the limit resets
     if not caps and (cap := cap_from_text(row_text(row), at)):
         caps = [cap]
     return Limit(tuple(caps), at) if caps else None
@@ -226,7 +231,7 @@ def tail_rows(path: Path) -> list[dict]:
 
 
 def find_limit(path: Path | str | None, now: datetime) -> Limit | None:
-    """Newest usage-limit error in the transcript, if written in the last 5 minutes."""
+    """Newest usage-limit error in the transcript, if written in the last 5 minutes and no other error followed."""
     if not path:
         return None
     for row in reversed(tail_rows(Path(path))):
@@ -234,6 +239,8 @@ def find_limit(path: Path | str | None, now: datetime) -> Limit | None:
             limit = limit_of(row)
         except (KeyError, ValueError, TypeError, AttributeError):
             continue
+        if limit is None and row.get('isApiErrorMessage') and not row.get('isSidechain'):
+            return None  # a newer error that is no limit stopped the turn; the limit before it is stale
         if limit and now - limit.at < RECENT:
             return limit
     return None
@@ -345,7 +352,7 @@ def push(
     if token:
         headers['Authorization'] = f'Bearer {token}'  # ntfy.sh refuses anonymous email
     request = urllib.request.Request(base_url + urllib.parse.quote(topic, safe=''), data=text.encode(), headers=headers)
-    for attempt in range(1, 4):
+    for attempt in range(1, PUSH_ATTEMPTS + 1):
         try:
             urllib.request.urlopen(request, timeout=15).read()
             log(f'pushed (attempt {attempt})')
@@ -354,6 +361,7 @@ def push(
             log(f'push failed (attempt {attempt}): {describe(e)}')
             if is_permanent(e):
                 return False
-            time.sleep(30)
+            if attempt < PUSH_ATTEMPTS:
+                time.sleep(PUSH_RETRY_WAIT)
     log('gave up pushing')
     return False
