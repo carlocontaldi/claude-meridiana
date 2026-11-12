@@ -33,7 +33,9 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
 
+  # Compares with the plugins' main: after a limitwatch.py change it stays red until they are synced and pushed.
   vendored:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
