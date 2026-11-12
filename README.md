@@ -39,7 +39,7 @@ The spend-cap and Fable rows come from Claude Code 2.1.322's own tables, not fro
 
 ## Private ntfy topics
 
-`stored_topic(path, prefix)` makes `<prefix>-` and 22 random letters and digits (131 bits, from `secrets`) on first use, saves it at `path` (mode 600) and returns it from then on; `effective_topic(option, path, prefix)` lets a plugin option win, with an empty option meaning no push. A plugin's `topic` command shows the name to subscribe the phone app to.
+`stored_topic(path, prefix)` makes `<prefix>-` and 22 random letters and digits (131 bits, from `secrets`) on first use, saves it at `path` (mode 600) and returns it from then on; `effective_topic(option, path, prefix)` lets a plugin option win, with an empty option falling back to the saved topic. A plugin's `topic` command shows the name to subscribe the phone app to.
 
 ## License
 
