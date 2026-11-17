@@ -342,11 +342,14 @@ def push(
     *,
     title: str,
     tags: str,
+    icon: str = '',
     email: str = '',
     token: str = '',
 ) -> bool:
     """POST `text` to the ntfy topic, retrying transient failures; True once it went through."""
     headers = {'Title': title, 'Tags': tags}
+    if icon:
+        headers['Icon'] = icon  # a URL: the ntfy app on the phone downloads the image, this machine does not
     if email:
         headers['Email'] = email
     if token:

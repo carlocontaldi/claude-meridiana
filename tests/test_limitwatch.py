@@ -439,6 +439,13 @@ class PushTest(unittest.TestCase):
         self.assertNotIn('Email', headers)
         self.assertNotIn('Authorization', headers)
 
+    def test_the_icon_url_travels_as_a_header_only_when_set(self):
+        self.push(icon='https://example.com/icon.png')
+        self.push()
+        with_icon, without_icon = (headers for _, headers, _ in self.server.requests)
+        self.assertEqual(with_icon['Icon'], 'https://example.com/icon.png')
+        self.assertNotIn('Icon', without_icon)
+
     def test_a_client_error_is_logged_without_the_topic_and_not_retried(self):
         self.server.status = 400
         self.assertFalse(self.push())
