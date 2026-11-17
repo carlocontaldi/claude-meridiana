@@ -1,4 +1,7 @@
-# Claude Meridiana
+<h1 align="center">
+  <img src="assets/meridiana-logo.png" alt="" width="120"><br>
+  Claude Meridiana
+</h1>
 
 > **me·ri·dia·na** · Italian /me.riˈdja.na/ (*meh-ree-DYAH-nah*) · *noun*, feminine, plural *meridiane*
 >
