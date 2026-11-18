@@ -494,5 +494,329 @@ class PushTest(unittest.TestCase):
         self.assertEqual(self.lines, ['push failed (attempt 1): ValueError'])
 
 
+class AnnouncementTest(unittest.TestCase):
+    def test_what_reset_and_what_still_holds_is_said_in_one_text(self):
+        five, weekly, credits = (lw.Cap(kind, AT) for kind in ('five_hour', 'weekly', 'spend_weekly'))
+        self.assertEqual(lw.announcement([five], []), 'Your 5-hour limit has reset. You can continue.')
+        self.assertEqual(
+            lw.announcement([five], [weekly]),
+            'Your 5-hour limit has reset. Still in force: weekly limit (until Oct 20, 10:00 UTC).',
+        )
+        self.assertEqual(
+            lw.announcement([five], [credits]),
+            'Your 5-hour limit has reset. You can continue.'
+            ' Usage credits stay capped by your weekly spend limit until Oct 20, 10:00 UTC.',
+        )
+
+
+class SharedDirTest(unittest.TestCase):
+    def test_the_folder_follows_the_claude_folder_unless_overridden(self):
+        with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': '/cfg'}, clear=True):
+            self.assertEqual(lw.shared_dir(), Path('/cfg/meridiana'))
+        with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': '/cfg', 'MERIDIANA_DIR': '/elsewhere'}, clear=True):
+            self.assertEqual(lw.shared_dir(), Path('/elsewhere'))
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(Path, 'home', return_value=Path('/home/x')):
+            self.assertEqual(lw.shared_dir(), Path('/home/x/.claude/meridiana'))
+
+    def test_two_spellings_of_an_address_share_a_key_and_two_addresses_do_not(self):
+        self.assertEqual(lw.email_key(' Me@Example.com '), lw.email_key('me@example.com'))
+        self.assertNotEqual(lw.email_key('me@example.com'), lw.email_key('you@example.com'))
+        self.assertNotIn('example', lw.email_key('me@example.com'))
+
+    def test_caps_survive_the_note(self):
+        caps = [lw.Cap('five_hour', AT), lw.Cap('spend_weekly', AT + timedelta(days=3))]
+        self.assertEqual(lw.decode_caps(lw.encode_caps(caps)), caps)
+
+
+class HandOverTest(unittest.TestCase):
+    EMAIL = 'me@example.com'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.lines = []
+        self.phone_pushes = []
+        self.restored = [lw.Cap('five_hour', AT)]
+        self.pending = [lw.Cap('weekly', AT + timedelta(days=3))]
+        patch = mock.patch.object(lw, 'HANDOVER_POLL', 0.01)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def offer(self, at=AT, email=EMAIL):
+        return lw.Offer(at, email, self.dir)
+
+    def hand_over(self, at=AT, email=EMAIL, wait=10, sending_wait=10):
+        return lw.hand_over(
+            at,
+            self.restored,
+            self.pending,
+            email,
+            self.lines.append,
+            on_goon=lambda: self.phone_pushes.append(1),
+            directory=self.dir,
+            wait=wait,
+            sending_wait=sending_wait,
+        )
+
+    def find(self, suffix, at=AT, email=EMAIL):
+        return lw.find_held(suffix, at, lw.email_key(email), self.dir)
+
+    def in_thread(self, call):
+        """Run `call` beside the test, like the other plugin's watcher; its result lands in the list."""
+        result = []
+        thread = threading.Thread(target=lambda: result.append(call()))
+        thread.start()
+        self.addCleanup(thread.join, 10)
+        return thread, result
+
+    def wait_for(self, condition):
+        for _ in range(500):
+            if condition():
+                return
+            threading.Event().wait(0.01)
+        self.fail('timed out')
+
+    def test_without_an_offer_nothing_is_handed_over_or_written(self):
+        self.assertFalse(self.hand_over())
+        self.assertEqual(list(self.dir.rglob('*')), [])
+
+    def test_a_note_goon_sends_is_handed_over(self):
+        with self.offer() as offer:
+            thread, result = self.in_thread(self.hand_over)
+            self.wait_for(offer.note.exists)
+            self.assertTrue(offer.claim())
+            self.assertEqual(offer.read_note(), (self.restored, self.pending))
+            offer.delivered()
+        thread.join(10)
+        self.assertEqual(result, [True])
+        self.assertEqual(self.phone_pushes, [1])
+
+    def test_goon_claiming_before_the_note_arrives_still_covers_it(self):
+        with self.offer() as offer:
+            self.assertTrue(offer.claim())
+            thread, result = self.in_thread(self.hand_over)
+            self.wait_for(offer.note.exists)
+            offer.delivered()
+        thread.join(10)
+        self.assertEqual(result, [True])
+
+    def test_a_goon_that_claimed_but_could_not_send_leaves_the_email_to_the_caller(self):
+        with self.offer() as offer:
+            thread, result = self.in_thread(self.hand_over)
+            self.wait_for(offer.note.exists)
+            self.assertTrue(offer.claim())
+        thread.join(10)
+        self.assertEqual(result, [False])
+        self.assertIn('Goon could not send the announcement', self.lines)
+        self.assertEqual(
+            self.phone_pushes, [1]
+        )  # the phone was told when Goon claimed; the caller still owes the email
+
+    def test_a_note_goon_leaves_unsent_is_taken_back_so_the_caller_sends_it(self):
+        with self.offer() as offer:
+            thread, result = self.in_thread(self.hand_over)
+            self.wait_for(offer.note.exists)
+        thread.join(10)
+        self.assertEqual(result, [False])
+        self.assertFalse(offer.note.exists())
+        self.assertIn('Goon did not send the announcement', self.lines)
+        self.assertEqual(self.phone_pushes, [])
+
+    def test_a_goon_that_never_answers_loses_the_email_to_the_caller_for_good(self):
+        with self.offer() as offer:
+            self.assertFalse(self.hand_over(wait=0.05))
+            self.assertFalse(offer.note.exists())
+            self.assertFalse(offer.claim())
+
+    def test_a_claim_made_while_the_caller_gives_up_wins(self):
+        real = lw.write_new
+
+        def claim_first(path, data):
+            if data.get('by') == 'portavoce':
+                real(path, {'v': 1, 'by': 'goon'})
+            return real(path, data)
+
+        with self.offer() as offer, mock.patch.object(lw, 'write_new', claim_first):
+            self.assertTrue(self.hand_over(wait=0, sending_wait=0))
+            self.assertEqual(json.loads(offer.verdict.read_text())['by'], 'goon')
+        self.assertIn('Goon is still sending; leaving the email to it', self.lines)
+
+    def test_a_caller_that_arrives_after_goon_sent_and_ended_leaves_the_email_to_it(self):
+        with self.offer() as offer:
+            self.assertTrue(offer.claim())
+            offer.delivered()
+        self.assertTrue(self.hand_over())
+        self.assertNotIn('left the announcement with Goon', self.lines)
+        self.assertEqual(self.phone_pushes, [1])
+
+    def test_a_caller_that_arrives_after_goon_failed_to_send_sends_its_own(self):
+        with self.offer() as offer:
+            self.assertTrue(offer.claim())
+        self.assertFalse(self.hand_over())
+
+    def test_an_email_sent_to_another_address_or_at_another_time_is_not_the_callers(self):
+        with self.offer(email='you@example.com') as other:
+            other.claim()
+            other.delivered()
+        with self.offer(at=AT + lw.MERGE_WINDOW + timedelta(seconds=1)) as later:
+            later.claim()
+            later.delivered()
+        self.assertFalse(self.hand_over())
+
+    def test_of_many_simultaneous_writers_one_wins_and_its_data_is_what_is_stored(self):
+        path = self.dir / 'verdict'
+        wins = []
+        threads = [
+            threading.Thread(target=lambda who=who: lw.write_new(path, {'who': who}) and wins.append(who))
+            for who in range(24)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(len(wins), 1)
+        self.assertEqual(json.loads(path.read_text()), {'who': wins[0]})
+
+    def test_goon_waits_for_the_note_of_a_portavoce_that_is_known_to_be_coming(self):
+        with self.offer() as offer, lw.Intent(AT, self.EMAIL, self.dir):
+            thread, result = self.in_thread(offer.wait_note)
+            threading.Event().wait(0.1)
+            self.assertEqual(result, [])
+            lw.write_new(offer.note, {'v': 1, 'restored': lw.encode_caps(self.restored), 'pending': []})
+            thread.join(10)
+        self.assertEqual(result, [(self.restored, [])])
+
+    def test_goon_does_not_wait_when_no_portavoce_is_coming(self):
+        with self.offer() as offer:
+            self.assertIsNone(offer.wait_note(patience=60))
+
+    def test_goon_stops_waiting_when_the_portavoce_that_was_coming_ends_without_a_note(self):
+        with self.offer() as offer:
+            intent = lw.Intent(AT, self.EMAIL, self.dir).open()
+            thread, result = self.in_thread(offer.wait_note)
+            threading.Event().wait(0.1)
+            intent.close()
+            thread.join(10)
+        self.assertEqual(result, [None])
+
+    def test_goons_wait_for_a_portavoce_has_a_limit(self):
+        with self.offer() as offer, lw.Intent(AT, self.EMAIL, self.dir):
+            self.assertIsNone(offer.wait_note(patience=0.05))
+
+    def test_an_intent_for_another_address_or_time_is_not_waited_for(self):
+        with self.offer() as offer:
+            with lw.Intent(AT, 'you@example.com', self.dir):
+                self.assertIsNone(offer.wait_note(patience=60))
+            with lw.Intent(AT + lw.MERGE_WINDOW + timedelta(seconds=1), self.EMAIL, self.dir):
+                self.assertIsNone(offer.wait_note(patience=60))
+
+    def test_the_intent_goes_when_its_watcher_ends(self):
+        with lw.Intent(AT, self.EMAIL, self.dir) as intent:
+            self.assertTrue(intent.path.exists())
+        self.assertFalse(intent.path.exists())
+
+    def test_an_unusable_shared_folder_gives_no_offer_instead_of_an_error(self):
+        blocked = self.dir / 'blocked'
+        blocked.write_text('a file where the folder should be')
+        lines = []
+        self.assertIsNone(lw.try_open(lw.Offer(AT, self.EMAIL, blocked), lines.append))
+        self.assertEqual(lines, ['no hand-over: NotADirectoryError'])
+
+    def test_a_shared_folder_that_fails_mid_way_leaves_the_caller_to_send_its_own_email(self):
+        with self.offer(), mock.patch.object(lw, 'write_new', side_effect=PermissionError):
+            self.assertFalse(self.hand_over())
+        self.assertIn('hand-over failed: PermissionError', self.lines)
+        self.assertEqual(self.phone_pushes, [])
+
+    def test_a_goon_still_resuming_after_it_claimed_is_waited_for_up_to_the_sending_wait(self):
+        with self.offer() as offer:
+            offer.claim()
+            self.assertTrue(self.hand_over(wait=0, sending_wait=0.05))
+        self.assertIn('Goon is still sending; leaving the email to it', self.lines)
+
+    def test_only_one_side_ever_gets_the_email(self):
+        with self.offer() as offer:
+            self.assertTrue(offer.claim())
+            self.assertFalse(offer.claim())
+
+    def test_files_left_by_a_dead_watcher_do_not_decide_for_the_next(self):
+        with self.offer() as first:
+            first.claim()
+            first.delivered()
+            lw.write_new(first.note, {'v': 1, 'restored': [], 'pending': []})
+        with self.offer() as offer:
+            self.assertEqual([offer.note.exists(), offer.sent.exists()], [False, False])
+            self.assertTrue(offer.claim())
+
+    def test_a_day_old_file_goes_unless_it_is_the_offer_of_a_live_watcher(self):
+        folder = self.dir / 'handover'
+        with self.offer() as live:
+            old, fresh = folder / '1.sent', folder / '2.sent'
+            old.write_text('{}')
+            fresh.write_text('{}')
+            for path in (old, live.path):
+                os.utime(path, (1, 1))
+            lw.sweep(folder)
+            self.assertEqual([old.exists(), fresh.exists(), live.path.exists()], [False, True, True])
+
+    def test_the_offer_goes_when_its_watcher_ends(self):
+        with self.offer() as offer:
+            self.assertTrue(offer.path.exists())
+        self.assertFalse(offer.path.exists())
+
+    def refused(self, **kwargs):
+        """Hand over with a Goon that never answers, and say whether the note was ever left."""
+        self.assertFalse(self.hand_over(wait=0.05, **kwargs))
+        return 'left the announcement with Goon' not in self.lines
+
+    def test_an_offer_whose_watcher_died_is_ignored(self):
+        path = self.dir / 'handover' / f'{int(AT.timestamp())}.offer'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'v': 1, 'at': int(AT.timestamp()), 'email': lw.email_key(self.EMAIL)}))
+        self.assertTrue(self.refused())
+
+    def test_an_offer_to_another_address_is_ignored(self):
+        with self.offer(email='you@example.com'):
+            self.assertTrue(self.refused())
+
+    def test_an_offer_for_a_different_time_is_ignored(self):
+        with self.offer(at=AT + lw.MERGE_WINDOW + timedelta(seconds=1)):
+            self.assertIsNone(self.find('.offer'))
+        with self.offer(at=AT + lw.MERGE_WINDOW):
+            self.assertIsNotNone(self.find('.offer'))
+
+    def test_an_offer_of_another_version_is_ignored(self):
+        with self.offer() as offer:
+            offer_file = json.loads(offer.path.read_text())
+            os.ftruncate(offer.fd, 0)
+            os.lseek(offer.fd, 0, os.SEEK_SET)
+            os.write(offer.fd, json.dumps({**offer_file, 'v': 2}).encode())
+            self.assertIsNone(self.find('.offer'))
+
+    def test_a_second_note_is_not_left_beside_one_waiting(self):
+        with self.offer() as offer:
+            lw.write_new(offer.note, {'v': 1, 'restored': [], 'pending': []})
+            self.assertFalse(self.hand_over())
+            self.assertTrue(offer.note.exists())
+
+    def test_an_unreadable_note_is_none(self):
+        with self.offer() as offer:
+            self.assertIsNone(offer.read_note())
+            offer.note.write_text('not json')
+            self.assertIsNone(offer.read_note())
+            offer.note.write_text(json.dumps({'v': 1, 'restored': [], 'pending': []}))
+            self.assertIsNone(offer.read_note())
+            offer.note.write_text(json.dumps({'v': 1, 'restored': [['five_hour', 'soon']], 'pending': []}))
+            self.assertIsNone(offer.read_note())
+
+    def test_a_note_left_by_a_dead_watcher_does_not_reach_the_next_offer(self):
+        note = self.dir / 'handover' / f'{int(AT.timestamp())}.note'
+        note.parent.mkdir(parents=True)
+        lw.write_new(note, {'v': 1, 'restored': lw.encode_caps(self.restored), 'pending': []})
+        with self.offer() as offer:
+            self.assertIsNone(offer.read_note())
+
+
 if __name__ == '__main__':
     unittest.main()
