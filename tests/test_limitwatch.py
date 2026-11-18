@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from email.header import decode_header, make_header
 from pathlib import Path
 from unittest import mock
 
@@ -439,12 +440,32 @@ class PushTest(unittest.TestCase):
         self.assertNotIn('Email', headers)
         self.assertNotIn('Authorization', headers)
 
+    def test_a_title_with_emoji_travels_as_an_encoded_word_that_reads_back_as_the_title(self):
+        title = '🐕‍🦺▶️ Interrupted Claude sessions resumed'
+        self.assertTrue(self.push(title=title))
+        raw = self.server.requests[0][1]['Title']
+        self.assertTrue(raw.isascii())
+        self.assertEqual(str(make_header(decode_header(raw))), title)
+
+    def test_the_tags_are_optional(self):
+        self.push(tags='')
+        self.assertNotIn('Tags', self.server.requests[0][1])
+
     def test_the_icon_url_travels_as_a_header_only_when_set(self):
         self.push(icon='https://example.com/icon.png')
         self.push()
         with_icon, without_icon = (headers for _, headers, _ in self.server.requests)
         self.assertEqual(with_icon['Icon'], 'https://example.com/icon.png')
         self.assertNotIn('Icon', without_icon)
+
+    def test_an_email_ends_with_the_signature_and_a_push_without_one_does_not(self):
+        self.push(signature='Claude Goon')
+        self.push(signature='Claude Goon', email='')
+        self.push(text='unsigned')
+        emailed, phone_only, unsigned = (body for _, _, body in self.server.requests)
+        self.assertEqual(emailed, 'hello\n\n— Claude Goon'.encode())
+        self.assertEqual(phone_only, b'hello')
+        self.assertEqual(unsigned, b'unsigned')
 
     def test_a_client_error_is_logged_without_the_topic_and_not_retried(self):
         self.server.status = 400

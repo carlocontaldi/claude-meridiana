@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import http.client
@@ -361,6 +362,11 @@ def describe(error: Exception) -> str:
     return f'HTTP {error.code}' if isinstance(error, urllib.error.HTTPError) else type(error).__name__
 
 
+def encode_header(text: str) -> str:
+    """Non-ASCII text as an RFC 2047 word: urllib sends headers as latin-1, and ntfy decodes the word."""
+    return text if text.isascii() else f'=?UTF-8?B?{base64.b64encode(text.encode()).decode()}?='
+
+
 def push(
     base_url: str,
     topic: str,
@@ -368,17 +374,22 @@ def push(
     log: Callable[[str], None],
     *,
     title: str,
-    tags: str,
+    tags: str = '',
     icon: str = '',
     email: str = '',
     token: str = '',
+    signature: str = '',
 ) -> bool:
-    """POST `text` to the ntfy topic, retrying transient failures; True once it went through."""
-    headers = {'Title': title, 'Tags': tags}
+    """POST `text` to the ntfy topic, retrying transient failures; True once it went through. An email is signed."""
+    headers = {'Title': encode_header(title)}
+    if tags:
+        headers['Tags'] = tags
     if icon:
         headers['Icon'] = icon  # a URL: the ntfy app on the phone downloads the image, this machine does not
     if email:
         headers['Email'] = email
+        if signature:
+            text = f'{text}\n\n— {signature}'
     if token:
         headers['Authorization'] = f'Bearer {token}'  # ntfy.sh refuses anonymous email
     request = urllib.request.Request(base_url + urllib.parse.quote(topic, safe=''), data=text.encode(), headers=headers)
