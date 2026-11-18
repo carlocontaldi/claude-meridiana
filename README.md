@@ -40,6 +40,45 @@ Rules 2 and 3 assume a monthly cap resets at the turn of the calendar month. The
 
 The spend-cap and Fable rows come from Claude Code 2.1.322's own tables, not from a real error: every limit row seen so far is a 5-hour or weekly one.
 
+## One email for both plugins
+
+Portavoce and Goon both email when a limit resets, and the free ntfy tier allows five emails a day. When both are installed with the same address, they try to send one email, from Goon. The protocol lives here so that both run the same code; the hash check in each plugin's tests keeps the copies in step. Each plugin works alone when the other is absent or older.
+
+All files are in `<claude folder>/meridiana/handover/` (the folder follows `CLAUDE_CONFIG_DIR`; `MERIDIANA_DIR` overrides it) and are named by the planned time.
+
+| File | Written by | Holds |
+|---|---|---|
+| `.offer` | Goon, locked while its watcher lives | the resume time and a fingerprint of the email address |
+| `.intent` | Portavoce, locked while its watcher waits | its push time and the same fingerprint |
+| `.note` | Portavoce | the caps that reset and the caps still in force |
+| `.verdict` | whichever side decides first | `goon` or `portavoce` |
+| `.sent` | Goon | that its email went out, with the time and fingerprint |
+
+An offer and an intent match when the fingerprints are equal and the times are at most `MERGE_WINDOW` (5 seconds) apart.
+
+1. Goon opens an offer when its watcher starts, but only if an email address and token are set. Portavoce opens an intent when its watcher starts to wait.
+2. At its resume time Goon, if it is switched on and has sessions waiting, writes the verdict `goon` before it resumes any of them. It then resumes them 15 seconds apart.
+3. At its push time Portavoce looks for a live matching offer. With none it sends its own email. With one it writes the note and acts on the verdict:
+   - **Verdict `goon`:** Portavoce pushes to the phone at once, without the email header, then waits for Goon's watcher to end (up to 2 hours). If Goon wrote the sent mark, Portavoce sends nothing more. If Goon ended without sending, Portavoce sends its own email, so the phone gets a second push.
+   - **No verdict and Goon's watcher has ended** (Goon was off or had no sessions): Portavoce sends its own email.
+   - **No verdict after 10 minutes:** Portavoce writes the verdict `portavoce` and sends its own email. Goon's later claim fails, so Goon pushes without an email.
+4. When Goon has resumed its sessions and has something to report, it reads the note. It waits for the note (up to 2 minutes) only while a matching intent is held, that is, while a Portavoce is known to be coming. It sends one email that starts with Portavoce's announcement and goes on with Goon's summary, then writes the sent mark. With nothing to report it sends nothing, and Portavoce sends its own.
+5. A Portavoce that wakes after Goon's watcher has ended finds no offer, reads the sent marks, and if one matches only pushes to the phone.
+
+One verdict file, made in one atomic step, decides who emails, so the two never both send the email for the same reset. This holds whatever the order or timing, with these exceptions:
+
+- If Goon is killed after its push went through and before it wrote the sent mark, Portavoce sends its own email as well.
+- If the shared folder cannot be used (a read-only disk, a filesystem without hard links), each plugin logs `no hand-over` and sends its own email.
+- Emails planned more than `MERGE_WINDOW` apart are separate events and stay separate.
+
+What it costs:
+
+- When Goon claims and then sends nothing (every session had already continued), Portavoce's phone is pushed twice.
+- If Goon's note wait runs out before a Portavoce that is still asleep leaves its note, Goon's email lacks the announcement. Portavoce then sends no email, and its phone push carries the announcement.
+- If Goon takes more than 2 hours to finish after it claimed, Portavoce stops waiting and leaves the email to it; if Goon then fails, no email goes out.
+
+The verdict, note and sent mark stay after Goon's watcher ends, because Portavoce may still be reading them. Goon removes any older than a day when it next starts.
+
 ## Private ntfy topics
 
 `stored_topic(path, prefix)` makes `<prefix>-` and 22 random letters and digits (131 bits, from `secrets`) on first use, saves it at `path` (mode 600) and returns it from then on; `effective_topic(option, path, prefix)` lets a plugin option win, with an empty option falling back to the saved topic. A plugin's `topic` command shows the name to subscribe the phone app to.
