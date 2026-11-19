@@ -7,7 +7,15 @@
 >
 > A sundial: a dial on which the shadow of a rod, the gnomon, shows the hour.
 
+<br>
+
 A sundial reads the hour from a shadow. Claude Meridiana reads a Claude Code usage-limit error and works out when each cap resets. It is the code that [Claude Portavoce](https://github.com/carlocontaldi/claude-portavoce) and [Claude Goon](https://github.com/carlocontaldi/claude-goon) share: which caps the error reports and when each comes back, a flock-based claim so one watcher runs per reset time, and the ntfy push.
+
+<p1 align="center">
+  <img src="assets/meridiana-banner.png" alt="" width="1280"><br>
+</p1>
+
+<br>
 
 Python 3.9+, standard library only. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
 
