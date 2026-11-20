@@ -38,11 +38,11 @@ Read from the error row's `quotaLimits` / `apiErrorParams.rate_limit_info`, else
 A spend cap that blocks the usage credits is reported beside the limit the error names, with the reset from `overageResetsAt`: `overageDisabledReason` `org_spend_cap_reached` is a spend limit, `org_level_disabled_until` the monthly one. Claude Code's error does not say whether a spend cap is daily, weekly or monthly, so the period is inferred, in this order:
 
 1. the error's own flags: `dailyCapPaused` is daily, a full `overagePeriodMonthly` is monthly;
-2. a reset more than a week away, or at the turn of a month (00:00 UTC on the 1st), is monthly;
+2. a reset more than a week away, at the turn of a month (00:00 UTC on the 1st), or at a day of the month and UTC time already seen for a monthly cap, is monthly;
 3. a reset between one day and a week away is weekly;
 4. a reset within a day could be a daily or a weekly cap, so it stays "individual spend limit".
 
-Rules 2 and 3 assume a monthly cap resets at the turn of the calendar month. These kinds only limit the credits, so a plugin can tell that the plan itself is usable once its window resets.
+Rules 2 and 3 assume a monthly cap resets at the turn of the calendar month, unless it was seen resetting at another moment. Each such moment (day, hour and minute, UTC) is kept in `monthly_anchors.json` (written under `monthly_anchors.lock`) beside the `handover/` folder, the last four of them; a moment on the 29th to the 31st does not come back in a short month. These kinds only limit the credits, so a plugin can tell that the plan itself is usable once its window resets.
 
 The spend-cap and Fable rows come from Claude Code 2.1.322's own tables, not from a real error: every limit row seen so far is a 5-hour or weekly one.
 
@@ -50,7 +50,7 @@ The spend-cap and Fable rows come from Claude Code 2.1.322's own tables, not fro
 
 Portavoce and Goon both email when a limit resets, and the free ntfy tier allows five emails a day. When both are installed with the same address, they try to send one email, from Goon. The protocol lives here so that both run the same code; the hash check in each plugin's tests keeps the copies in step. Each plugin works alone when the other is absent or older.
 
-All files are in `<claude folder>/meridiana/handover/` (the folder follows `CLAUDE_CONFIG_DIR`; `MERIDIANA_DIR` overrides it) and are named by the planned time.
+All hand-over files are in `<claude folder>/meridiana/handover/` (the folder follows `CLAUDE_CONFIG_DIR`; `MERIDIANA_DIR` overrides it) and are named by the planned time.
 
 | File | Written by | Holds |
 |---|---|---|

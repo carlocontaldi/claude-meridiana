@@ -74,7 +74,19 @@ class ParseResetTest(unittest.TestCase):
         self.assertIsNone(lw.parse_reset('API Error: overloaded', AT))
 
 
-class CapsFromInfoTest(unittest.TestCase):
+class WithSharedFolder(unittest.TestCase):
+    """Points the shared folder at a temporary one, so no test touches the real `~/.claude/meridiana`."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.folder = Path(tmp.name)
+        patcher = mock.patch.dict(os.environ, {'MERIDIANA_DIR': str(self.folder)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class CapsFromInfoTest(WithSharedFolder):
     def test_each_rate_limit_type_has_its_kind_and_label(self):
         expected = {
             'five_hour': '5-hour limit',
@@ -156,12 +168,81 @@ class SpendKindTest(unittest.TestCase):
         self.assertEqual(self.kind(timedelta(days=3), overagePeriodMonthly={'utilization': 1}), 'monthly')
         self.assertEqual(self.kind(timedelta(days=3), overagePeriodMonthly={'utilization': 0.4}), 'spend_weekly')
 
+    def test_a_reset_at_a_known_monthly_moment_is_monthly_even_when_near(self):
+        reset, at = datetime(2026, 12, 15, 9, 0, tzinfo=UTC), datetime(2026, 12, 12, 9, 0, tzinfo=UTC)
+        self.assertEqual(lw.spend_kind({}, reset, at), 'spend_weekly')
+        self.assertEqual(lw.spend_kind({}, reset, at, anchors=[(15, 9, 0)]), 'monthly')
+
     def test_without_the_time_of_the_error_nothing_is_inferred(self):
         self.assertEqual(lw.spend_kind({}, self.NOW + timedelta(days=3), None), 'spend')
 
     def test_the_period_shows_in_the_label(self):
         self.assertEqual(lw.Cap('spend_weekly', self.NOW).label, 'weekly spend limit')
         self.assertEqual(lw.Cap('spend_daily', self.NOW).label, 'daily spend limit')
+
+
+class AnchorsTest(WithSharedFolder):
+    SPEND = {'overageDisabledReason': 'org_spend_cap_reached'}
+
+    def spend_kind_of(self, reset, at):
+        _, spend = lw.caps_from_info(info(**self.SPEND, overageResetsAt=int(reset.timestamp())), at)
+        return spend.kind
+
+    def test_the_moment_of_a_monthly_reset_is_kept_for_a_later_one_that_is_near(self):
+        self.assertEqual(
+            self.spend_kind_of(datetime(2026, 12, 15, 9, 0, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC)), 'monthly'
+        )
+        self.assertEqual(lw.load_anchors(), [(15, 9, 0)])
+        later = self.spend_kind_of(datetime(2027, 1, 15, 9, 0, tzinfo=UTC), datetime(2027, 1, 12, 9, 0, tzinfo=UTC))
+        self.assertEqual(later, 'monthly')
+
+    def test_the_turn_of_the_month_is_not_kept_because_it_is_always_known(self):
+        self.spend_kind_of(datetime(2026, 12, 1, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC))
+        self.assertEqual(lw.load_anchors(), [])
+
+    def test_a_weekly_reset_is_not_kept(self):
+        kind = self.spend_kind_of(datetime(2026, 11, 23, 9, 0, tzinfo=UTC), datetime(2026, 11, 20, 9, 0, tzinfo=UTC))
+        self.assertEqual((kind, lw.load_anchors()), ('spend_weekly', []))
+
+    def test_only_the_last_four_moments_are_kept(self):
+        for day in range(2, 8):
+            lw.learn_anchor(datetime(2026, 12, day, 9, 0, tzinfo=UTC))
+        self.assertEqual(lw.load_anchors(), [(day, 9, 0) for day in range(4, 8)])
+
+    def test_the_moment_of_an_org_wide_disable_is_kept_too(self):
+        extra = {'overageDisabledReason': 'org_level_disabled_until', 'overageResetsAt': 1796000000}
+        lw.caps_from_info(info(**extra), datetime.fromtimestamp(1795900000, UTC))
+        self.assertEqual(lw.load_anchors(), [(30, 0, 53)])
+
+    def test_a_writer_waits_for_the_lock_and_keeps_what_another_one_wrote_meanwhile(self):
+        learner = threading.Thread(target=lw.learn_anchor, args=(datetime(2026, 12, 15, 9, 0, tzinfo=UTC),))
+        with open(self.folder / lw.ANCHORS_LOCK, 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            learner.start()
+            learner.join(0.3)
+            self.assertTrue(learner.is_alive())
+            (self.folder / lw.ANCHORS_FILE).write_text('[[20, 6, 0]]')
+        learner.join(5)
+        self.assertEqual(lw.load_anchors(), [(20, 6, 0), (15, 9, 0)])
+
+    def test_a_failed_replace_leaves_no_scratch_file_and_does_not_raise(self):
+        with mock.patch('limitwatch.os.replace', side_effect=PermissionError):
+            lw.learn_anchor(datetime(2026, 12, 15, 9, 0, tzinfo=UTC))
+        self.assertEqual(sorted(path.name for path in self.folder.iterdir()), [lw.ANCHORS_LOCK])
+        self.assertEqual(lw.load_anchors(), [])
+
+    def test_a_shared_folder_that_cannot_be_used_does_not_stop_the_caps(self):
+        blocker = self.folder / 'a-file'
+        blocker.write_text('')
+        with mock.patch.dict(os.environ, {'MERIDIANA_DIR': str(blocker / 'inside')}):
+            kind = self.spend_kind_of(datetime(2026, 12, 15, 9, 0, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC))
+        self.assertEqual(kind, 'monthly')
+
+    def test_a_damaged_file_reads_as_no_moments(self):
+        (self.folder / lw.ANCHORS_FILE).write_text('{"a": 1}')
+        self.assertEqual(lw.load_anchors(), [])
+        (self.folder / lw.ANCHORS_FILE).write_text('[[15, 9]]')
+        self.assertEqual(lw.load_anchors(), [])
 
 
 class CapFromTextTest(unittest.TestCase):
