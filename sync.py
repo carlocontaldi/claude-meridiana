@@ -12,7 +12,7 @@ HEADER = '# Vendored from claude-meridiana: edit it there and run sync.py.\n# bo
 
 
 def vendored() -> str:
-    body = (HERE / 'limitwatch.py').read_text()
+    body = (HERE / 'limitwatch.py').read_bytes().decode('utf-8')
     return HEADER.format(hashlib.sha256(body.encode()).hexdigest()) + body
 
 
@@ -23,10 +23,11 @@ def main() -> int:
     expected, stale = vendored(), []
     for plugin in PLUGINS:
         target = plugin / 'hooks' / 'limitwatch.py'
-        if not target.exists() or target.read_text() != expected:
+        target_text = target.read_bytes().decode('utf-8') if target.exists() else None
+        if target_text != expected:
             stale.append(target)
             if not check:
-                target.write_text(expected)
+                target.write_bytes(expected.encode('utf-8'))
     for target in stale:
         print(f'{"stale" if check else "updated"}: {target}')
     return 1 if check and stale else 0
