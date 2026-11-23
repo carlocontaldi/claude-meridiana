@@ -441,7 +441,9 @@ def is_held(path: Path) -> bool:
 def write_new(path: Path, data: dict) -> bool:
     """Create `path` with `data` in one step; False if it already exists."""
     scratch = path.with_name(f'{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp')
-    scratch.write_text(json.dumps(data))
+    fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(data))
     try:
         os.link(scratch, path)
         return True
