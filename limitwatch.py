@@ -456,19 +456,20 @@ def is_held(path: Path) -> bool:
         sidecar = Path(str(path) + '.lock')
         if not sidecar.exists():
             return False
+        fd = None
         try:
             fd = os.open(sidecar, os.O_RDWR)
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            os.close(fd)
+            return False
+        except FileNotFoundError:
             return False
         except (BlockingIOError, OSError):
-            try:
-                os.close(fd)
-            except UnboundLocalError:
-                pass
             return True
+        finally:
+            if fd is not None:
+                os.close(fd)
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
