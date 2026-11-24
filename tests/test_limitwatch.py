@@ -1,4 +1,7 @@
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import http.server
 import json
 import os
@@ -301,7 +304,9 @@ class TopicTest(unittest.TestCase):
         topic = lw.stored_topic(self.path, 'claude-goon')
         self.assertRegex(topic, r'^claude-goon-[A-Za-z0-9]{22}$')
         self.assertEqual(lw.stored_topic(self.path, 'claude-goon'), topic)
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        if os.name != 'nt':
+            if os.name != 'nt':
+                self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_every_topic_is_one_ntfy_accepts_different_and_has_only_letters_and_digits_after_the_prefix(self):
         made = {lw.stored_topic(self.path, 'claude-portavoce', rotate=True) for _ in range(200)}
@@ -359,6 +364,8 @@ class ClaimTest(unittest.TestCase):
         lw.release(fd, self.marker)
 
     def test_a_marker_replaced_between_open_and_lock_is_not_claimed_by_its_old_inode(self):
+        if os.name == 'nt':
+            self.skipTest('fcntl replacement tests run on POSIX only')
         real_flock, calls = fcntl.flock, []
 
         def flock_after_a_release(fd, operation):

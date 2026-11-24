@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: git clone --depth 1 https://github.com/carlocontaldi/claude-portavoce ../claude-portavoce
       - run: git clone --depth 1 https://github.com/carlocontaldi/claude-goon ../claude-goon
-      - run: python3 sync.py --check
+      - run: python sync.py --check
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

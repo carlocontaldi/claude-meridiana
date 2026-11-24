@@ -15,12 +15,12 @@ A sundial reads the hour from a shadow. Claude Meridiana reads a Claude Code usa
   <img src="assets/meridiana-banner.png" alt="" width="1280"><br>
 </p1>
 
-Python 3.9+, standard library only. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
+Python 3.9+, standard library only. Windows and Linux are supported. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
 
 ```
-python3 sync.py           # copy into ../claude-portavoce/hooks and ../claude-goon/hooks
-python3 sync.py --check   # exit 1 if a copy differs from limitwatch.py
-python3 -m unittest discover -s tests
+python sync.py           # copy into ../claude-portavoce/hooks and ../claude-goon/hooks
+python sync.py --check   # exit 1 if a copy differs from limitwatch.py
+python -m unittest discover -s tests
 ```
 
 ## Caps it knows
