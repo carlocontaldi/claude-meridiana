@@ -305,8 +305,7 @@ class TopicTest(unittest.TestCase):
         self.assertRegex(topic, r'^claude-goon-[A-Za-z0-9]{22}$')
         self.assertEqual(lw.stored_topic(self.path, 'claude-goon'), topic)
         if os.name != 'nt':
-            if os.name != 'nt':
-                self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_every_topic_is_one_ntfy_accepts_different_and_has_only_letters_and_digits_after_the_prefix(self):
         made = {lw.stored_topic(self.path, 'claude-portavoce', rotate=True) for _ in range(200)}
