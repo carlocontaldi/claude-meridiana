@@ -5,6 +5,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header, make_header
@@ -647,6 +648,40 @@ class SharedDirTest(unittest.TestCase):
     def test_caps_survive_the_note(self):
         caps = [lw.Cap('five_hour', AT), lw.Cap('spend_weekly', AT + timedelta(days=3))]
         self.assertEqual(lw.decode_caps(lw.encode_caps(caps)), caps)
+
+
+class FirstDeliveryTest(WithSharedFolder):
+    INPUT = json.dumps(
+        {'session_id': 's1', 'prompt_id': 'p1', 'error': 'rate_limit', 'last_assistant_message': 'resets 3pm'}
+    )
+
+    def test_the_first_delivery_is_first_and_a_second_registration_of_the_same_hook_is_not(self):
+        self.assertTrue(lw.is_first_delivery('portavoce', self.INPUT))
+        self.assertFalse(lw.is_first_delivery('portavoce', self.INPUT.encode()))
+
+    def test_the_same_input_still_reaches_each_plugin_once(self):
+        self.assertTrue(lw.is_first_delivery('portavoce', self.INPUT))
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT))
+
+    def test_another_prompt_is_another_delivery(self):
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT))
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT.replace('p1', 'p2')))
+
+    def test_an_input_that_cannot_be_read_is_delivered_every_time(self):
+        self.assertTrue(lw.is_first_delivery('goon', b'not json'))
+        self.assertTrue(lw.is_first_delivery('goon', b'not json'))
+
+    def test_a_delivery_is_forgotten_after_an_hour(self):
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT))
+        mark = next((self.folder / 'delivered').iterdir())
+        old = time.time() - lw.DELIVERY_MEMORY - 1
+        os.utime(mark, (old, old))
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT))
+
+    def test_without_a_folder_to_remember_in_the_work_is_done(self):
+        (self.folder / 'delivered').write_text('a file where the folder should be')
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT))
+        self.assertTrue(lw.is_first_delivery('goon', self.INPUT))
 
 
 class ReadJsonTest(unittest.TestCase):
