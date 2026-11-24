@@ -1,4 +1,3 @@
-import fcntl
 import http.server
 import json
 import os
@@ -217,7 +216,7 @@ class AnchorsTest(WithSharedFolder):
     def test_a_writer_waits_for_the_lock_and_keeps_what_another_one_wrote_meanwhile(self):
         learner = threading.Thread(target=lw.learn_anchor, args=(datetime(2026, 12, 15, 9, 0, tzinfo=UTC),))
         with open(self.folder / lw.ANCHORS_LOCK, 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            lw.lock_file(lock.fileno())
             learner.start()
             learner.join(0.3)
             self.assertTrue(learner.is_alive())
@@ -382,7 +381,8 @@ class TopicTest(unittest.TestCase):
         topic = lw.stored_topic(self.path, 'claude-goon')
         self.assertRegex(topic, r'^claude-goon-[A-Za-z0-9]{22}$')
         self.assertEqual(lw.stored_topic(self.path, 'claude-goon'), topic)
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        if os.name != 'nt':
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_every_topic_is_one_ntfy_accepts_different_and_has_only_letters_and_digits_after_the_prefix(self):
         made = {lw.stored_topic(self.path, 'claude-portavoce', rotate=True) for _ in range(200)}
@@ -439,17 +439,18 @@ class ClaimTest(unittest.TestCase):
         self.assertIsNotNone(fd)
         lw.release(fd, self.marker)
 
+    @unittest.skipIf(os.name == 'nt', 'Windows cannot delete a file while it is open')
     def test_a_marker_replaced_between_open_and_lock_is_not_claimed_by_its_old_inode(self):
-        real_flock, calls = fcntl.flock, []
+        real_lock, calls = lw.lock_file, []
 
-        def flock_after_a_release(fd, operation):
+        def lock_after_a_release(fd, *, blocking=True):
             if not calls:
                 self.marker.unlink()
                 self.marker.touch()
-            calls.append(operation)
-            return real_flock(fd, operation)
+            calls.append(blocking)
+            return real_lock(fd, blocking=blocking)
 
-        with mock.patch.object(fcntl, 'flock', flock_after_a_release):
+        with mock.patch.object(lw, 'lock_file', lock_after_a_release):
             fd = lw.claim(self.marker)
         self.assertEqual(os.fstat(fd).st_ino, self.marker.stat().st_ino)
         lw.release(fd, self.marker)
@@ -469,6 +470,24 @@ class ClaimTest(unittest.TestCase):
         winners = [fd for fd in won if fd is not None]
         self.assertEqual(len(winners), 1)
         lw.release(winners[0], self.marker)
+
+
+class IsHeldTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name, 'offer')
+        self.fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, self.fd)
+
+    def test_a_file_locked_exclusively_is_held(self):
+        lw.lock_file(self.fd)
+        self.assertTrue(lw.is_held(self.path))
+
+    @unittest.skipIf(os.name == 'nt', 'Windows has no shared lock')
+    def test_two_processes_probing_at_once_do_not_see_each_other_as_the_holder(self):
+        lw.lock_file(self.fd, shared=True)
+        self.assertFalse(lw.is_held(self.path))
 
 
 class Recorder(http.server.BaseHTTPRequestHandler):
@@ -630,6 +649,28 @@ class SharedDirTest(unittest.TestCase):
         self.assertEqual(lw.decode_caps(lw.encode_caps(caps)), caps)
 
 
+class ReadJsonTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name, 'note')
+        patch = mock.patch.object(lw, 'READ_RETRY', 0)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_read_that_is_refused_for_a_moment_is_tried_again(self):
+        with mock.patch.object(Path, 'read_text', side_effect=[PermissionError, PermissionError, '{"v": 1}']):
+            self.assertEqual(lw.read_json(self.path), {'v': 1})
+
+    def test_a_read_that_stays_refused_gives_up(self):
+        with mock.patch.object(Path, 'read_text', side_effect=PermissionError) as read:
+            self.assertIsNone(lw.read_json(self.path))
+        self.assertEqual(read.call_count, lw.READ_TRIES)
+
+    def test_a_missing_file_is_not_retried(self):
+        self.assertIsNone(lw.read_json(self.path))
+
+
 class HandOverTest(unittest.TestCase):
     EMAIL = 'me@example.com'
 
@@ -731,6 +772,18 @@ class HandOverTest(unittest.TestCase):
             self.assertFalse(offer.note.exists())
             self.assertFalse(offer.claim())
 
+    def test_a_note_that_cannot_be_removed_does_not_fail_the_hand_over(self):
+        real = Path.unlink
+
+        def refuse_the_note(path, missing_ok=False):
+            if path.suffix == '.note':
+                raise PermissionError
+            return real(path, missing_ok=missing_ok)
+
+        with self.offer(), mock.patch.object(Path, 'unlink', refuse_the_note):
+            self.assertFalse(self.hand_over(wait=0.05))
+        self.assertNotIn('hand-over failed', ' '.join(self.lines))
+
     def test_a_claim_made_while_the_caller_gives_up_wins(self):
         real = lw.write_new
 
@@ -765,6 +818,19 @@ class HandOverTest(unittest.TestCase):
             later.claim()
             later.delivered()
         self.assertFalse(self.hand_over())
+
+    def test_a_record_is_written_even_when_its_scratch_file_cannot_be_removed(self):
+        path = self.dir / 'verdict'
+        with mock.patch.object(Path, 'unlink', side_effect=PermissionError):
+            self.assertTrue(lw.write_new(path, {'v': 1}))
+        self.assertEqual(json.loads(path.read_text()), {'v': 1})
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX modes')
+    def test_a_record_is_readable_by_its_owner_only(self):
+        self.addCleanup(os.umask, os.umask(0o022))
+        path = self.dir / 'verdict'
+        lw.write_new(path, {'v': 1})
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_of_many_simultaneous_writers_one_wins_and_its_data_is_what_is_stored(self):
         path = self.dir / 'verdict'

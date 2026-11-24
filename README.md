@@ -9,13 +9,13 @@
 
 <br>
 
-A sundial reads the hour from a shadow. Claude Meridiana reads a Claude Code usage-limit error and works out when each cap resets. It is the code that [Claude Portavoce](https://github.com/carlocontaldi/claude-portavoce) and [Claude Goon](https://github.com/carlocontaldi/claude-goon) share: which caps the error reports and when each comes back, a flock-based claim so one watcher runs per reset time, and the ntfy push.
+A sundial reads the hour from a shadow. Claude Meridiana reads a Claude Code usage-limit error and works out when each cap resets. It is the code that [Claude Portavoce](https://github.com/carlocontaldi/claude-portavoce) and [Claude Goon](https://github.com/carlocontaldi/claude-goon) share: which caps the error reports and when each comes back, a file-lock claim so one watcher runs per reset time, and the ntfy push.
 
 <p1 align="center">
   <img src="assets/meridiana-banner.png" alt="" width="1280"><br>
 </p1>
 
-Python 3.9+, standard library only. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
+Python 3.9+, standard library only. Works on Linux, macOS, and Windows (uses `fcntl.flock` on POSIX and `msvcrt.locking` on Windows; CI gates on Linux only, its Windows leg is informational). Python on Windows has no time zone database: there, `pip install tzdata`; without it a reset stated in a named zone is not understood. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
 
 ```
 python3 sync.py           # copy into ../claude-portavoce/hooks and ../claude-goon/hooks
