@@ -924,7 +924,25 @@ class HandOverTest(unittest.TestCase):
         blocked.write_text('a file where the folder should be')
         lines = []
         self.assertIsNone(lw.try_open(lw.Offer(AT, self.EMAIL, blocked), lines.append))
-        self.assertEqual(lines, ['no hand-over: NotADirectoryError'])
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r'^no hand-over: (NotADirectoryError|FileExistsError)$')  # Windows says the latter
+
+    def test_two_threads_closing_an_offer_at_once_release_it_once(self):
+        real, released = lw.release, []
+
+        def slow_release(fd, path):
+            released.append(fd)
+            time.sleep(0.05)
+            real(fd, path)
+
+        offer = self.offer().open()
+        with mock.patch.object(lw, 'release', slow_release):
+            threads = [threading.Thread(target=offer.close) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(5)
+        self.assertEqual(len(released), 1)
 
     def test_a_shared_folder_that_fails_mid_way_leaves_the_caller_to_send_its_own_email(self):
         with self.offer(), mock.patch.object(lw, 'write_new', side_effect=PermissionError):
