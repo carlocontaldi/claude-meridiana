@@ -15,7 +15,7 @@ A sundial reads the hour from a shadow. Claude Meridiana reads a Claude Code usa
   <img src="assets/meridiana-banner.png" alt="" width="1280"><br>
 </p1>
 
-Python 3.9+, standard library only. Works on Linux, macOS, and Windows (uses `fcntl.flock` on POSIX and `msvcrt.locking` on Windows; CI gates on Linux only, its Windows leg is informational; on Windows two probes of a lock made at the same moment can each read the other as its holder, because Windows has no shared lock). Python on Windows has no time zone database: there, `pip install tzdata`; without it a reset stated in a named zone is not understood. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
+Python 3.9+, standard library only. Works on Linux, macOS, and Windows (uses `fcntl.flock` on POSIX and `msvcrt.locking` on Windows; CI runs the tests on Linux and on Windows; on Windows two probes of a lock made at the same moment can each read the other as its holder, because Windows has no shared lock). Python on Windows has no time zone database: there, `pip install tzdata`; without it a reset stated in a named zone is not understood. It is not a package or a plugin: a plugin is cloned on its own and cannot import from another repository, so `sync.py` copies `limitwatch.py` into each plugin's `hooks/` with a hash header, and each plugin's tests fail if its copy no longer matches that header.
 
 ```
 python3 sync.py           # copy into ../claude-portavoce/hooks and ../claude-goon/hooks
